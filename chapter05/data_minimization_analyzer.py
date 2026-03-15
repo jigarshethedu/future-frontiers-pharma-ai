@@ -183,3 +183,25 @@ if __name__ == "__main__":
     for r in removable:
         print(f"  - {r.feature} (SHAP={r.shap_importance:.4f}, Δ AUC={r.auc_delta:.4f}, Tier={r.privacy_risk_tier})")
     print("\nModule complete.")
+
+
+def generate_full_feature_dili_dataset(n: int = 500, random_state: int = 42):
+    import numpy as np
+    import pandas as pd
+    rng = np.random.RandomState(random_state)
+    cols = (
+        ["MolWeight","LogP","HBD","HBA","RotBonds","TPSA","AromaticRings","HeavyAtomCount"] +
+        ["MTT_IC50","LDH_release","ATP_depletion","Caspase3_activity","ROS_production","MitoMembranePotential"] +
+        ["ALT","AST","ALP","TotalBilirubin","GGT"] +
+        ["Cmax","AUC_0inf","HalfLife","CL_F"] +
+        ["Age","Sex","BMI","eGFR","AlbuminLevel","ConcomitantMeds"] +
+        ["CYP1A2","CYP3A4","UGT1A1","ABCB1","ABCG2","SLC22A1","HMOX1","NRF2"] +
+        ["Dose_mg","DurationDays","RouteOral","Polypharmacy_score"] +
+        ["random_1","random_2","random_3","random_4","random_5","random_6"]
+    )
+    X = rng.randn(n, 47)
+    y = rng.binomial(1, 0.10, n)
+    X[y == 1, :10] += rng.uniform(0.4, 0.9, size=(y.sum(), 10))
+    df = pd.DataFrame(X, columns=cols)
+    df["dili"] = y
+    return df

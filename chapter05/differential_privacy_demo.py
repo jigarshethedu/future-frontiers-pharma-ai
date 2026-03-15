@@ -64,8 +64,8 @@ class PrivacyBudget:
         block operations once the budget is gone rather than to extend it
         quietly — extending silently is how privacy debt accumulates.
         """
-        if self.exhausted:
-            print(f"[BUDGET BLOCK] {operation_name} blocked — epsilon budget exhausted.")
+        if self.exhausted or (self.consumed_epsilon + epsilon_used > self.total_epsilon):
+            print(f"[BUDGET BLOCK] {operation_name} blocked — would exceed epsilon budget.")
             return False
         self.consumed_epsilon += epsilon_used
         self.operations.append({
@@ -190,6 +190,21 @@ def dp_logistic_regression(X_train: np.ndarray, y_train: np.ndarray,
     y_prob = model.predict_proba(X_te)[:, 1]
     results["auc"] = round(roc_auc_score(y_test, y_prob), 4)
 
+    # If called with a DataFrame, return (DataFrame, baseline_auc)
+    # If called with arrays, return list of dicts — both formats supported
+    if _called_with_df:
+        from sklearn.linear_model import LogisticRegression as _LR2
+        from sklearn.preprocessing import StandardScaler as _SS2
+        from sklearn.metrics import roc_auc_score as _auc2
+        import pandas as _pd2
+        _sc2 = _SS2(); _Xt2 = _sc2.fit_transform(X_train); _Xe2 = _sc2.transform(X_test)
+        _bm2 = _LR2(max_iter=200); _bm2.fit(_Xt2, y_train)
+        _base = float(_auc2(y_test, _bm2.predict_proba(_Xe2)[:,1]))
+        _df_r = _pd2.DataFrame([{"epsilon": r["epsilon"], "auc": r["mean_auc"],
+                                   "auc_retention_pct": round(100*r["mean_auc"]/_base, 1)
+                                   if _base > 0 else 0}
+                                  for r in results])
+        return _df_r, _base
     return results
 
 
@@ -197,49 +212,74 @@ def dp_logistic_regression(X_train: np.ndarray, y_train: np.ndarray,
 # PRIVACY-UTILITY TRADEOFF CURVE
 # ---------------------------------------------------------------------------
 
-def compute_privacy_utility_curve(X: np.ndarray, y: np.ndarray,
-                                   epsilons: list[float],
-                                   n_runs: int = 5) -> list[dict]:
+def compute_privacy_utility_curve(X, y=None, epsilons=None, n_runs: int = 5):
     """
-    Measures AUC at multiple epsilon values to plot the privacy-utility tradeoff.
-    Lower epsilon = stronger privacy = typically lower AUC.
-    This curve feeds directly into the P-ROI Model's utility loss calculation.
+    Measures AUC at multiple epsilon values to quantify the privacy-utility tradeoff.
 
-    n_runs: number of repetitions per epsilon to average noise randomness.
+    Accepts two calling conventions:
+      1. Array:     compute_privacy_utility_curve(X, y, epsilons, n_runs)
+                    Returns: list[dict] with keys epsilon, mean_auc, std_auc
+      2. DataFrame: compute_privacy_utility_curve(df)   # df has a 'dili' column
+                    Returns: (pd.DataFrame, baseline_auc)
+                    DataFrame columns: epsilon, auc, auc_retention_pct
     """
+    import pandas as pd
     from sklearn.model_selection import train_test_split
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.metrics import roc_auc_score
+
+    called_with_df = hasattr(X, 'columns')   # True = DataFrame input
+
+    if called_with_df:
+        df = X
+        y  = df["dili"].values
+        X  = df.drop(columns=["dili"]).values
+
+    if epsilons is None:
+        epsilons = [0.1, 0.5, 1.0, 2.0, 4.0, 8.0, 10.0]
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.25, random_state=99, stratify=y
+        X, y, test_size=0.25, random_state=99,
+        stratify=y if len(np.unique(y)) > 1 else None
     )
     scaler = StandardScaler()
     X_tr = scaler.fit_transform(X_train)
     X_te = scaler.transform(X_test)
 
+    # Baseline AUC (no DP)
+    base_model = LogisticRegression(max_iter=200, C=1.0)
+    base_model.fit(X_tr, y_train)
+    baseline_auc = float(roc_auc_score(y_test, base_model.predict_proba(X_te)[:, 1]))
+
     results = []
     for eps in epsilons:
-        # Simulate DP noise injection proportional to 1/epsilon
         aucs = []
         for _ in range(n_runs):
-            # Add calibrated noise to training labels (proxy for DP-SGD effect)
             noise_level = max(0.0, min(0.3, 1.0 / (eps * 5)))
-            flip_mask = np.random.binomial(1, noise_level, size=len(y_train)).astype(bool)
+            flip_mask = np.random.binomial(1, noise_level, len(y_train)).astype(bool)
             y_noisy = y_train.copy()
             y_noisy[flip_mask] = 1 - y_noisy[flip_mask]
             model = LogisticRegression(max_iter=200, C=1.0)
             model.fit(X_tr, y_noisy)
             aucs.append(roc_auc_score(y_test, model.predict_proba(X_te)[:, 1]))
         results.append({
-            "epsilon": eps,
+            "epsilon":  eps,
             "mean_auc": round(float(np.mean(aucs)), 4),
-            "std_auc": round(float(np.std(aucs)), 4),
+            "std_auc":  round(float(np.std(aucs)),  4),
         })
+
+    if called_with_df:
+        df_result = pd.DataFrame([{
+            "epsilon":          r["epsilon"],
+            "auc":              r["mean_auc"],
+            "auc_retention_pct": round(100 * r["mean_auc"] / baseline_auc, 1)
+                                  if baseline_auc > 0 else 0,
+        } for r in results])
+        return df_result, baseline_auc
+
     return results
 
-
-# ---------------------------------------------------------------------------
-# MAIN DEMO
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     print("=" * 70)
@@ -351,60 +391,3 @@ def calculate_proi(annual_revenue_eur: float,
         "recommendation": "INVEST — positive P-ROI" if p_roi > 1.0 else "REVIEW — marginal or negative P-ROI",
     }
 
-
-def compute_privacy_utility_curve(df_or_X, y=None,
-                                   epsilons=None) -> tuple:
-    """
-    Overloaded version that accepts either:
-      - A pandas DataFrame (with 'dili' column) — as tests pass it
-      - (X array, y array) — original signature
-
-    Returns (results_df, baseline_auc) where results_df has columns:
-      epsilon, auc, auc_retention_pct
-    """
-    import pandas as pd
-    from sklearn.model_selection import train_test_split
-
-    # Handle DataFrame input
-    if hasattr(df_or_X, 'columns'):
-        df = df_or_X
-        y = df["dili"].values
-        X = df.drop(columns=["dili"]).values
-    else:
-        X = df_or_X
-
-    if epsilons is None:
-        epsilons = [0.1, 0.5, 1.0, 2.0, 4.0, 8.0, 10.0, float("inf")]
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.25, random_state=99,
-        stratify=y if y.sum() > 1 else None
-    )
-    scaler = StandardScaler()
-    X_tr = scaler.fit_transform(X_train)
-    X_te = scaler.transform(X_test)
-
-    # Baseline (no DP noise)
-    base_model = LogisticRegression(max_iter=200, C=1.0)
-    base_model.fit(X_tr, y_train)
-    baseline_auc = float(roc_auc_score(y_test, base_model.predict_proba(X_te)[:, 1]))
-
-    rows = []
-    for eps in epsilons:
-        if eps == float("inf"):
-            auc = baseline_auc
-        else:
-            noise_level = max(0.0, min(0.3, 1.0 / (eps * 5)))
-            flip_mask = np.random.RandomState(42).binomial(1, noise_level, len(y_train)).astype(bool)
-            y_noisy = y_train.copy()
-            y_noisy[flip_mask] = 1 - y_noisy[flip_mask]
-            m = LogisticRegression(max_iter=200, C=1.0)
-            m.fit(X_tr, y_noisy)
-            auc = float(roc_auc_score(y_test, m.predict_proba(X_te)[:, 1]))
-        rows.append({
-            "epsilon": eps,
-            "auc": round(auc, 4),
-            "auc_retention_pct": round(100 * auc / baseline_auc, 1) if baseline_auc > 0 else 0,
-        })
-
-    return pd.DataFrame(rows), baseline_auc
