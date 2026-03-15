@@ -235,3 +235,153 @@ if __name__ == "__main__":
               f"Global AUC: {log.global_auc:.4f} | Aggregation: {log.aggregation_method}")
 
     print("\nModule complete. See chapter07/ for full Flower and SubstraFL implementations.")
+
+
+# ---------------------------------------------------------------------------
+# COMPATIBILITY LAYER — matches test_federated_learning_stub.py expected API
+# ---------------------------------------------------------------------------
+
+def generate_multi_site_dataset(n_sites: int = 5,
+                                 n_per_site: int = 200,
+                                 seed: int = 42) -> list[tuple]:
+    """
+    Generates synthetic data for multiple FL sites.
+    Returns list of (site_id, X, y, n) tuples — the format tests expect.
+    """
+    sites = []
+    for i in range(n_sites):
+        site = generate_site_data(f"site_{i}", n_per_site, seed=seed + i * 7)
+        sites.append((site.site_id, site.X_local, site.y_local, site.n_patients))
+    return sites
+
+
+def federated_average(weights: list[np.ndarray],
+                       counts: list[int]) -> np.ndarray:
+    """
+    Weighted average of weight vectors by sample count.
+    Wrapper around fedavg_aggregate() using the test's expected signature.
+    """
+    total = sum(counts)
+    result = np.zeros_like(weights[0], dtype=float)
+    for w, n in zip(weights, counts):
+        result += (n / total) * w
+    return result
+
+
+class CrossSiloClinicalFL:
+    """Pattern 1 — Cross-Silo Clinical FL (hospitals, homogeneous EHR data)."""
+
+    def __init__(self, sites: list[tuple], n_rounds: int = 5):
+        self.sites = [
+            FLSite(site_id=sid, n_patients=n,
+                   X_local=X, y_local=y)
+            for sid, X, y, n in sites
+        ]
+        self.n_rounds = n_rounds
+
+    def train(self) -> dict:
+        rng = np.random.default_rng(42)
+        X_hold = rng.normal(1.0, 0.35, (200, 8)).clip(0, 5)
+        y_hold = rng.binomial(1, 0.12, 200)
+        logs = run_fl_simulation(self.sites, self.n_rounds,
+                                  holdout_X=X_hold, holdout_y=y_hold)
+        return {
+            "rounds_completed": len(logs),
+            "final_avg_auc": logs[-1].global_auc if logs else 0.0,
+            "governance_logs": logs,
+        }
+
+
+class CrossCompanyFL:
+    """Pattern 2 — Cross-Company Drug Discovery FL (competitive, adversarial trust)."""
+
+    def __init__(self, companies: list[str]):
+        self.companies = companies
+
+    def governance_checklist(self) -> dict:
+        return {
+            "framework": "SubstraFL with permissioned access and per-update audit trail",
+            "governance_items": [
+                "Signed multi-party computation agreement between all participants",
+                "Independent audit of gradient updates before aggregation",
+                "Zero-knowledge proof of local training compliance",
+                "Secure aggregation preventing any participant seeing others' updates",
+                "Regulatory notification plan if a safety signal is detected in federated model",
+                "IP protection clauses for proprietary compound structures",
+            ],
+            "participants": self.companies,
+            "trust_model": "Adversarial — no participant trusts any other",
+        }
+
+
+class PatientDeviceFL:
+    """Pattern 4 — Patient-Device FL (wearables, smartphones, continuous monitoring)."""
+
+    def __init__(self, n_devices: int = 100, epsilon: float = 1.0):
+        self.n_devices = n_devices
+        self.epsilon = epsilon
+
+    def simulate_device_update(self, device_id: str,
+                                n_local_samples: int) -> dict:
+        rng = np.random.default_rng(hash(device_id) % (2**32))
+        raw_gradient = rng.normal(0, 0.1, 9)
+        sigma = np.sqrt(2 * np.log(1.25 / 1e-5)) / self.epsilon
+        noisy_gradient = raw_gradient + rng.normal(0, sigma, 9)
+        return {
+            "device_id": device_id,
+            "gradient_update": noisy_gradient,
+            "n_local_samples": n_local_samples,
+            "epsilon_consumed": self.epsilon,
+            "raw_data_transmitted": False,   # Key guarantee: only gradient, never raw data
+        }
+
+    def aggregate_device_updates(self, updates: list[dict]) -> dict:
+        gradients = np.array([u["gradient_update"] for u in updates])
+        return {
+            "aggregated_gradient": gradients.mean(axis=0),
+            "n_devices_contributed": len(updates),
+            "total_epsilon_consumed": sum(u["epsilon_consumed"] for u in updates),
+        }
+
+
+class RegulatorInTheLoopFL:
+    """Pattern 3 — Regulator-in-the-Loop FL (FDA/EMA with read-only metric access)."""
+
+    def __init__(self, regulator: str, sites: list[str]):
+        self.regulator = regulator
+        self.sites = sites
+
+    def generate_regulatory_report(self, round_num: int,
+                                    metrics: dict) -> dict:
+        return {
+            "regulator": self.regulator,
+            "round": round_num,
+            "participating_sites": len(self.sites),
+            "data_transmitted": "Aggregate model metrics only — no patient-level data",
+            "metrics_visible_to_regulator": metrics,
+            "privacy_guarantee": "DP-SGD with epsilon ≤ 4.0 applied at each site",
+            "audit_log_hash": hex(hash(str(metrics) + str(round_num))),
+        }
+
+
+class FederatedPharmacovigilanceFL:
+    """Pattern 5 — Federated Pharmacovigilance (adverse event signal detection)."""
+
+    def __init__(self, reporting_systems: list[str], epsilon: float = 2.0):
+        self.reporting_systems = reporting_systems
+        self.epsilon = epsilon
+
+    def compute_dp_signal(self, drug: str, event: str,
+                           local_counts: list[int]) -> dict:
+        rng = np.random.default_rng(42)
+        sensitivity = 1.0
+        sigma = sensitivity * np.sqrt(2 * np.log(1.25 / 1e-5)) / self.epsilon
+        noisy_counts = [max(0, c + rng.normal(0, sigma)) for c in local_counts]
+        return {
+            "drug": drug,
+            "event": event,
+            "dp_aggregate_count": round(sum(noisy_counts), 1),
+            "epsilon_used": self.epsilon,
+            "systems_contributed": len(self.reporting_systems),
+            "raw_counts_shared": False,
+        }

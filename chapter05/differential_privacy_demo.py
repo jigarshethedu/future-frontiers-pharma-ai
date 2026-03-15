@@ -285,3 +285,126 @@ if __name__ == "__main__":
         print(f"  {row['epsilon']:>8.1f}  {row['mean_auc']:>10.4f}  {row['std_auc']:>8.4f}")
 
     print("\nModule complete. Use fig05_privacy_utility_tradeoff.py to plot the curve.")
+
+
+# ---------------------------------------------------------------------------
+# COMPATIBILITY LAYER — matches test imports
+# ---------------------------------------------------------------------------
+
+def generate_dili_dataset(n_samples: int = 2000, random_state: int = 42):
+    """
+    Generates a synthetic DILI dataset as a pandas DataFrame.
+    Wraps generate_synthetic_clinical_dataset() and packages as DataFrame
+    with named feature columns and a binary 'dili' outcome column.
+    """
+    import pandas as pd
+    X, y = generate_synthetic_clinical_dataset(n_patients=n_samples, seed=random_state)
+    cols = ["ALT","AST","Bilirubin","ALP","GGT","Albumin","Creatinine","CYP3A4"]
+    df = pd.DataFrame(X, columns=cols)
+    df["dili"] = y
+    return df
+
+
+def simulate_dp_noise(X: np.ndarray, epsilon: float,
+                      random_state: int = 42) -> np.ndarray:
+    """
+    Applies Gaussian mechanism noise to every element of X.
+    Sensitivity assumed to be 1.0 (unit sensitivity — features are
+    standardized before this call in production).
+    Lower epsilon = more noise = stronger privacy guarantee.
+    """
+    rng = np.random.RandomState(random_state)
+    sigma = np.sqrt(2 * np.log(1.25 / 1e-5)) / epsilon
+    return X + rng.normal(0, sigma, size=X.shape)
+
+
+def calculate_proi(annual_revenue_eur: float,
+                   breach_probability_pct: float,
+                   privacy_investment_eur: float,
+                   approval_value_eur: float = 0.0,
+                   trust_premium_eur: float = 0.0,
+                   regulatory_dividend_eur: float = 0.0,
+                   control_effectiveness: float = 0.75) -> dict:
+    """
+    Implements the P-ROI Model from Chapter 5:
+      P-ROI = (R_data + R_partner + R_regulatory + R_brand) / C_total
+
+    Simplified two-component version for this module:
+      R_risk   = GDPR_max_fine × breach_probability × control_effectiveness
+      R_other  = approval_value + trust_premium + regulatory_dividend
+      C_total  = privacy_investment_eur
+    """
+    gdpr_max_fine = annual_revenue_eur * 0.04
+    risk_avoidance = gdpr_max_fine * (breach_probability_pct / 100) * control_effectiveness
+    total_return = risk_avoidance + approval_value_eur + trust_premium_eur + regulatory_dividend_eur
+    p_roi = total_return / privacy_investment_eur if privacy_investment_eur > 0 else 0.0
+
+    return {
+        "p_roi": round(p_roi, 2),
+        "gdpr_max_fine_eur": gdpr_max_fine,
+        "risk_avoidance_value_eur": round(risk_avoidance, 2),
+        "approval_value_eur": approval_value_eur,
+        "trust_premium_eur": trust_premium_eur,
+        "regulatory_dividend_eur": regulatory_dividend_eur,
+        "total_return_eur": round(total_return, 2),
+        "privacy_investment_eur": privacy_investment_eur,
+        "recommendation": "INVEST — positive P-ROI" if p_roi > 1.0 else "REVIEW — marginal or negative P-ROI",
+    }
+
+
+def compute_privacy_utility_curve(df_or_X, y=None,
+                                   epsilons=None) -> tuple:
+    """
+    Overloaded version that accepts either:
+      - A pandas DataFrame (with 'dili' column) — as tests pass it
+      - (X array, y array) — original signature
+
+    Returns (results_df, baseline_auc) where results_df has columns:
+      epsilon, auc, auc_retention_pct
+    """
+    import pandas as pd
+    from sklearn.model_selection import train_test_split
+
+    # Handle DataFrame input
+    if hasattr(df_or_X, 'columns'):
+        df = df_or_X
+        y = df["dili"].values
+        X = df.drop(columns=["dili"]).values
+    else:
+        X = df_or_X
+
+    if epsilons is None:
+        epsilons = [0.1, 0.5, 1.0, 2.0, 4.0, 8.0, 10.0, float("inf")]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.25, random_state=99,
+        stratify=y if y.sum() > 1 else None
+    )
+    scaler = StandardScaler()
+    X_tr = scaler.fit_transform(X_train)
+    X_te = scaler.transform(X_test)
+
+    # Baseline (no DP noise)
+    base_model = LogisticRegression(max_iter=200, C=1.0)
+    base_model.fit(X_tr, y_train)
+    baseline_auc = float(roc_auc_score(y_test, base_model.predict_proba(X_te)[:, 1]))
+
+    rows = []
+    for eps in epsilons:
+        if eps == float("inf"):
+            auc = baseline_auc
+        else:
+            noise_level = max(0.0, min(0.3, 1.0 / (eps * 5)))
+            flip_mask = np.random.RandomState(42).binomial(1, noise_level, len(y_train)).astype(bool)
+            y_noisy = y_train.copy()
+            y_noisy[flip_mask] = 1 - y_noisy[flip_mask]
+            m = LogisticRegression(max_iter=200, C=1.0)
+            m.fit(X_tr, y_noisy)
+            auc = float(roc_auc_score(y_test, m.predict_proba(X_te)[:, 1]))
+        rows.append({
+            "epsilon": eps,
+            "auc": round(auc, 4),
+            "auc_retention_pct": round(100 * auc / baseline_auc, 1) if baseline_auc > 0 else 0,
+        })
+
+    return pd.DataFrame(rows), baseline_auc

@@ -352,3 +352,133 @@ if __name__ == "__main__":
 
     print("\nModule complete. Save outputs and cross-reference with")
     print("privacy_impact_assessment.py and privacy_budget_optimizer.py.")
+
+
+# ---------------------------------------------------------------------------
+# COMPATIBILITY LAYER — matches test_chapter05_core.py expected API
+# ---------------------------------------------------------------------------
+
+import datetime
+from dataclasses import dataclass as _dc, field as _field
+
+
+@_dc
+class _Criterion:
+    criterion_id: str
+    text: str
+    weight: float
+    passed: bool = False
+    notes: str = ""
+
+
+@_dc
+class _PrincipleResult:
+    principle_id: int
+    name: str
+    criteria: list = _field(default_factory=list)
+
+
+@_dc
+class PbDReport:
+    project_name: str
+    assessor: str
+    assessment_date: str = ""
+    principles: list = _field(default_factory=list)
+    overall_score: float = 0.0
+
+    @property
+    def failed_criteria(self):
+        return [c for p in self.principles for c in p.criteria if not c.passed]
+
+
+class PbDChecker:
+    """
+    High-level wrapper around the PbD checklist — provides the API expected
+    by test_chapter05_core.py: instantiate, run_assessment(), to_json(),
+    generate_text_report().
+    """
+
+    def __init__(self, project_name: str, assessor: str):
+        self.project_name = project_name
+        self.assessor = assessor
+        self.report = PbDReport(
+            project_name=project_name,
+            assessor=assessor,
+            assessment_date=datetime.date.today().isoformat(),
+            principles=self._build_principles(),
+        )
+
+    def _build_principles(self) -> list:
+        raw = build_pharma_pbd_checklist()
+        result = []
+        for p in raw:
+            pr = _PrincipleResult(principle_id=p.principle_id, name=p.name)
+            for q in p.questions:
+                pr.criteria.append(_Criterion(
+                    criterion_id=q.question_id,
+                    text=q.text,
+                    weight=q.weight,
+                ))
+            result.append(pr)
+        return result
+
+    def run_assessment(self, responses: dict, notes: dict = None) -> PbDReport:
+        """
+        responses: {criterion_id: True/False}
+        notes:     {criterion_id: str}  (optional)
+        Updates the report's criteria, recomputes overall_score, returns report.
+        """
+        notes = notes or {}
+        total_weight = 0.0
+        total_score = 0.0
+
+        for p in self.report.principles:
+            for c in p.criteria:
+                if c.criterion_id in responses:
+                    c.passed = bool(responses[c.criterion_id])
+                if c.criterion_id in notes:
+                    c.notes = notes[c.criterion_id]
+                total_weight += c.weight
+                total_score += c.weight if c.passed else 0.0
+
+        self.report.overall_score = (total_score / total_weight) if total_weight > 0 else 0.0
+        return self.report
+
+    def to_json(self) -> str:
+        import json
+        data = {
+            "project_name": self.report.project_name,
+            "assessor": self.report.assessor,
+            "assessment_date": self.report.assessment_date,
+            "overall_score": self.report.overall_score,
+            "principles": [
+                {
+                    "principle_id": p.principle_id,
+                    "name": p.name,
+                    "criteria": [
+                        {"criterion_id": c.criterion_id, "passed": c.passed,
+                         "notes": c.notes}
+                        for c in p.criteria
+                    ]
+                }
+                for p in self.report.principles
+            ]
+        }
+        return json.dumps(data, indent=2)
+
+    def generate_text_report(self) -> str:
+        lines = [
+            f"PbD ASSESSMENT REPORT",
+            f"Project  : {self.report.project_name}",
+            f"Assessor : {self.report.assessor}",
+            f"Date     : {self.report.assessment_date}",
+            f"STATUS   : {'PASS' if self.report.overall_score >= 0.7 else 'FAIL'}",
+            f"Score    : {self.report.overall_score:.1%}",
+            "",
+            "DPO REVIEW REQUIRED: " + (
+                "No — score above threshold"
+                if self.report.overall_score >= 0.7
+                else "Yes — score below 70%"
+            ),
+        ]
+        return "\n".join(lines)
